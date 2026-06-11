@@ -1,0 +1,301 @@
+---
+title: "Solution Exercice 1 - Introduction to Optimal Design with PFIM 7.1"
+author: "Lucie Fayette"
+date: "2026-06-07"
+output: html_document
+---
+# Exercice 1
+
+This exercise illustrates:
+
+- Definition of a 1-compartment PK model
+- Evaluation of an experimental design using the Fisher Information Matrix (FIM)
+- Comparison of designs
+- Optimization of sampling times using Simplex and Multiplicative algorithm
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = TRUE,
+  message = TRUE,
+  error = TRUE  
+)
+library(PFIM)
+library(ggplot2)
+library(dplyr)
+# library(gridExtra)
+library(tibble)
+```
+
+
+# Q1 evaluation of an empirical design
+
+
+## 1. MODEL DEFINITION
+```{r}
+modelEquations = list(  "RespPK" = "dose_RespPK/V * ka/(ka - Cl/V) * (exp(-Cl/V * t) - exp(-ka * t))")
+```
+
+
+```{r}
+modelFromLibrary = list("PKModel" = "Linear1FirstOrderSingleDose_kaClV")
+
+```
+
+
+## 2. POPULATION PARAMETERS
+```{r}
+# model parameters
+modelParameters = list(
+  ModelParameter( name = "V",    distribution = LogNormal( mu = 8, omega = sqrt(0.02) )),
+  ModelParameter( name = "Cl",   distribution = LogNormal( mu = 0.13, omega = sqrt(0.06) ) ),
+  ModelParameter( name = "ka",   distribution = LogNormal( mu = 1.6, omega = sqrt(0.70) ) ) )
+```
+
+## 3. ERROR MODEL
+```{r}
+errorModelRespPK = Combined1( output = "RespPK", sigmaInter = 0.6, sigmaSlope = 0.07 )
+modelError = list( errorModelRespPK )
+```
+
+## 4. DESIGN DEFINITION
+```{r}
+## administration 
+administrationRespPK = Administration( outcome = "RespPK", timeDose = c( 0 ), dose = c( 100 ) )
+
+## sampling times
+samplingTimesRespPK = SamplingTimes( outcome = "RespPK", samplings = c( 0.5, 1, 2, 6, 9, 12, 24, 36, 48, 72, 96, 120 ) )
+
+## arms definition
+empiricalArm = Arm( name = "empiricalArm",
+                    size = 32,
+                    administrations = list( administrationRespPK ) ,
+                    samplingTimes   = list( samplingTimesRespPK ) )
+
+empiricalDesign = Design( name = "empiricalDesign", arms = list( empiricalArm ) )
+```
+
+
+## 5. FISHER INFORMATION MATRIX COMPUTATION
+```{r}
+evaluationEmpiricalDesignFIMSettings = Evaluation( name = "",
+                                                   modelEquations = modelEquations,
+                                                   # modelFromLibrary = modelFromLibrary,
+                                                   
+                                                   modelParameters = modelParameters,
+                                                   modelError = modelError,
+                                                   designs = list( empiricalDesign ),
+                                                   outputs = list( "RespPK" ),
+                                                   fimType = 'population' )
+
+evaluationEmpiricalDesignFIM = run( evaluationEmpiricalDesignFIMSettings )
+show( evaluationEmpiricalDesignFIM )
+```
+
+# Q2 Evalaution of a two-arm design
+
+```{r}
+samplingsArm1 = SamplingTimes( outcome = "RespPK", samplings = c( 0.5, 2, 9, 24, 48, 96 ) )
+samplingsArm2 = SamplingTimes( outcome = "RespPK", samplings = c( 1, 6, 12, 36, 72, 120 ) )
+
+## arms definition
+Arm1 = Arm( name = "Arm1",
+            size = 16,
+            administrations = list( administrationRespPK ) ,
+            samplingTimes   = list( samplingsArm1 ) )
+Arm2 = Arm( name = "Arm2",
+            size = 16,
+            administrations = list( administrationRespPK ) ,
+            samplingTimes   = list( samplingsArm2 ) )
+
+designTwoArms = Design( name = "designTwoArms", arms = list( Arm1, Arm2) )
+```
+
+```{r}
+evaluationTwoArmsDesignFIMSettings = Evaluation( name = "",
+                                                 modelEquations = modelEquations,
+                                                 modelParameters = modelParameters,
+                                                 modelError = modelError,
+                                                 designs = list( designTwoArms ),
+                                                 outputs = list( "RespPK" ),
+                                                 fimType = 'population' )
+
+evaluationTwoArmsDesignFIM = run( evaluationTwoArmsDesignFIMSettings )
+show( evaluationTwoArmsDesignFIM )
+```
+
+```{r}
+# Extract D-criterion for design comparison
+getDcriterion(evaluationEmpiricalDesignFIM)
+getDcriterion(evaluationTwoArmsDesignFIM)
+
+# Extract RSE for design comparison
+RSE_EmpiricalDesign = getRSE(evaluationEmpiricalDesignFIM)
+RSE_TwoArmsDesign = getRSE(evaluationTwoArmsDesignFIM)
+
+RSE_EmpiricalDesign <- tibble::rownames_to_column(RSE_EmpiricalDesign, "Parameter")
+RSE_TwoArmsDesign <- tibble::rownames_to_column(RSE_TwoArmsDesign, "Parameter")
+
+
+RSE_comparison = RSE_EmpiricalDesign%>% 
+  mutate(RSE_EmpiricalDesign = RSE) %>% 
+  left_join(RSE_TwoArmsDesign %>% 
+              rename(RSE_TwoArmsDesign = RSE))
+RSE_comparison
+```
+
+
+```{r}
+ggplot( RSE_EmpiricalDesign%>% 
+          mutate(Design = "RSE_EmpiricalDesign" ) %>% 
+          rbind(RSE_TwoArmsDesign %>% 
+                  mutate(Design = "RSE_TwoArmsDesign" )),
+        aes(x = Parameter, y = RSE, fill = as.factor(Design))) +
+  geom_bar( stat="identity", position="dodge") +
+  ylab("RSE(%)") + 
+  labs(fill = "Design") + 
+  theme_bw()
+```
+
+
+
+# Q3 PK sample optimisation with Simplex algorithm
+
+```{r}
+# sampling times
+samplingsArmOptimisation = SamplingTimes( outcome = "RespPK", samplings = c( 0.5, 2, 24, 48, 96) )
+
+# sampling times constraints
+samplingConstraintsSimplexRespPK  = SamplingTimeConstraints( outcome = "RespPK",
+                                                             initialSamplings = c( 0.5, 2, 24, 48, 96 ),
+                                                             samplingsWindows = list( c(1/6,120) ),
+                                                             numberOfTimesByWindows = c(5),
+                                                             minSampling = c(1/6) )
+
+armWithSimplexConstraints = Arm( name = "armWithSimplexConstraints",
+                                 size = 32,
+                                 administrations = list( administrationRespPK ),
+                                 samplingTimes   = list( samplingsArmOptimisation ),
+                                 samplingTimesConstraints = list( samplingConstraintsSimplexRespPK ) )
+
+
+designWithSimplexConstraints = Design( name = "designWithSimplexConstraints", arms = list( armWithSimplexConstraints ), numberOfArms = 32 )
+
+```
+
+
+```{r}
+# RUN SIMPLEX OPTIMISATION
+optimizationSimplexSettings = Optimization( name = "Optimisation Simplex",
+                                            modelEquations = modelEquations,
+                                            modelParameters = modelParameters,
+                                            modelError = modelError,
+                                            optimizer = "SimplexAlgorithm",
+                                            optimizerParameters = list( pctInitialSimplexBuilding = 20,
+                                                                        maxIteration = 500,
+                                                                        tolerance = 1e-6,
+                                                                        showProcess = TRUE  ),
+                                            designs = list( designWithSimplexConstraints ),
+                                            fimType = "population",
+                                            outputs = list( "RespPK" ) )
+
+optimizationSimplexFIM = run( optimizationSimplexSettings )
+show(optimizationSimplexFIM)
+
+```
+
+
+# Q4 PK sample optimisation with Multiplicative algorithm
+
+```{r}
+
+administrationConstraintsMultRespPK = AdministrationConstraints( outcome = "RespPK", doses = list( 100 ) )
+
+
+samplingConstraintsMultRespPK  = SamplingTimeConstraints( outcome = "RespPK",
+                                                          initialSamplings = c( 0.5, 1, 2, 6, 12, 24, 48, 72, 96, 120 ),
+                                                          numberOfsamplingsOptimisable = 5,
+                                                          # fixedTimes = c()
+)
+
+
+armWithMultConstraints = Arm( name = "armWithMultConstraints",
+                              size = 32,
+                              administrations = list( administrationRespPK ),
+                              administrationsConstraints = list( administrationConstraintsMultRespPK ),
+                              
+                              samplingTimes   = list( samplingsArmOptimisation ),
+                              samplingTimesConstraints = list( samplingConstraintsMultRespPK ) )
+
+
+designWithMultConstraints = Design( name = "designWithMultConstraints", arms = list( armWithMultConstraints ), numberOfArms = 32 )
+
+```
+
+
+```{r}
+# RUN MULTIPLICATIVE ALGORITHM OPTIMISATION
+optimizationMultSettings = Optimization( name = "Optimisation Mult",
+                                         modelEquations = modelEquations,
+                                         modelParameters = modelParameters,
+                                         modelError = modelError,
+                                         optimizer = "MultiplicativeAlgorithm",
+                                         optimizerParameters = list( lambda = 0.99,
+                                                                     numberOfIterations = 1000,
+                                                                     weightThreshold = 0.001,
+                                                                     delta = 1e-04, showProcess = T ),
+                                         designs = list( designWithMultConstraints ),
+                                         fimType = "population",
+                                         outputs = list( "RespPK" ) )
+
+optimizationMultFIM = run( optimizationMultSettings )
+show(optimizationMultFIM)
+```
+
+
+# Bonus 
+```{r}
+
+# administrationConstraintsMultRespPK2 = AdministrationConstraints( outcome = "RespPK", doses = list( 100, 200 ) )
+
+samplingConstraintsMultRespPK2  = SamplingTimeConstraints( outcome = "RespPK",
+                                                           initialSamplings = c( 0.5, 1, 2, 6, 12, 24, 48, 72, 96, 120 ),
+                                                           numberOfsamplingsOptimisable = 6,
+                                                           # fixedTimes = c()
+)
+
+armWithMultConstraints2 = Arm( name = "armWithMultConstraints",
+                               size = 32,
+                               administrations = list( administrationRespPK ),
+                               administrationsConstraints = list( administrationConstraintsMultRespPK ),
+                               
+                               samplingTimes   = list( samplingsArmOptimisation ),
+                               samplingTimesConstraints = list( samplingConstraintsMultRespPK2 ) )
+
+
+designWithMultConstraints2 = Design( name = "designWithMultConstraints", arms = list( armWithMultConstraints2 ), numberOfArms = 32 )
+
+
+optimizationMultSettings2 = Optimization( name = "Optimisation Mult",
+                                          modelEquations = modelEquations,
+                                          modelParameters = modelParameters,
+                                          modelError = modelError,
+                                          optimizer = "MultiplicativeAlgorithm",
+                                          optimizerParameters = list( lambda = 0.99,
+                                                                      numberOfIterations = 1000,
+                                                                      weightThreshold = 0.001,
+                                                                      delta = 1e-04, showProcess = T ),
+                                          designs = list( designWithMultConstraints2 ),
+                                          fimType = "population",
+                                          outputs = list( "RespPK" ) )
+
+optimizationMultFIM2 = run( optimizationMultSettings2 )
+show(optimizationMultFIM2)
+```
+
+
+
+
+
