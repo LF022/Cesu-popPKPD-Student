@@ -1,0 +1,377 @@
+---
+title: "Solution Exercice 2 - Introduction to Optimal Design with PFIM 7.1"
+author: "Lucie FAYETTE"
+date: "2026-06-07"
+output: html_document
+---
+
+# Exercice 2
+
+This exercise illustrates:
+
+- Definition of a 1-compartment PK model including a discrete covariate
+- Evaluation of an experimental design using the Fisher Information Matrix (FIM)
+- Comparison of designs
+- Optimization of sampling times
+- Extension to a PK/PD model
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = TRUE,
+  message = TRUE,
+  error = TRUE  
+)
+# devtools::load_all("D:/PMX/PROJECTS/LUCIE/CesuPopPKPD/PFIM_7_1_beta/PFIM")
+library(PFIM)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(tibble)
+```
+
+
+# Q1 evaluation of an empirical design
+
+## 1. MODEL DEFINITION
+```{r}
+modelEquations = list(  "RespPK" = "dose_RespPK/V * ka/(ka - Cl/V) * (exp(-Cl/V * t) - exp(-ka * t))")
+```
+
+
+## 2. POPULATION PARAMETERS
+```{r}
+# model parameters
+modelParameters = list(
+  ModelParameter( name = "V",    distribution = LogNormal( mu = 8, omega = sqrt(0.02) )),
+  ModelParameter( name = "Cl",   distribution = LogNormal( mu = 0.13, omega = sqrt(0.06) ) ),
+  ModelParameter( name = "ka",   distribution = LogNormal( mu = 1.6, omega = sqrt(0.70) ) ) )
+```
+
+## 3. ERROR MODEL
+```{r}
+errorModelRespPK = Combined1( output = "RespPK", sigmaInter = 0.6, sigmaSlope = 0.07 )
+modelError = list( errorModelRespPK )
+```
+
+## 4. DESIGN DEFINITION
+```{r}
+## administration 
+administrationRespPK = Administration( outcome = "RespPK", timeDose = c( 0 ), dose = c( 100 ) )
+
+## sampling times
+samplingTimesRespPK = SamplingTimes( outcome = "RespPK", samplings = c( 0.5, 1, 2, 6, 9, 12, 24, 36, 48, 72, 96, 120 ) )
+
+## arms definition
+empiricalArm = Arm( name = "empiricalArm",
+                    size = 32,
+                    administrations = list( administrationRespPK ) ,
+                    samplingTimes   = list( samplingTimesRespPK ) )
+
+empiricalDesign = Design( name = "empiricalDesign", arms = list( empiricalArm ) )
+```
+
+## 5. COVARIATE DEFINITION
+```{r}
+# Fixed covariate: CYP2C9 on Cl
+CYP2C9 = Covariate(
+  name = "CYP2C9", categories = c("Wild","Others"),
+  categoriesProportions = c(0.6, 0.4),
+  effects = list( "Others" = c( "Cl" = log(0.5) ) )
+)
+```
+
+## 6. FISHER INFORMATION MATRIX COMPUTATION
+```{r}
+evaluationEmpiricalDesignFIMSettings = Evaluation( name = "",
+                                                   modelEquations = modelEquations,
+                                                   modelParameters = modelParameters,
+                                                   modelError = modelError,
+                                                   modelCovariates = list( CYP2C9 ), 
+                                                   modelCovariatesEquation = "exponential",
+                                                   designs = list( empiricalDesign ),
+                                                   outputs = list( "RespPK" ),
+                                                   fimType = 'population' )
+
+evaluationEmpiricalDesignFIM = run( evaluationEmpiricalDesignFIMSettings )
+show( evaluationEmpiricalDesignFIM )
+```
+
+```{r}
+testsCovariate = covariateTest(evaluationEmpiricalDesignFIM,
+                               thetaL       = log( 0.80 ),
+                               thetaU       = log( 1.25 ),
+                               target_power = 0.80,
+                               alpha        = 0.05 )
+
+show( testsCovariate )
+```
+
+
+# Q2 Evalaution of a two-arm design
+
+```{r}
+samplingsArm1 = SamplingTimes( outcome = "RespPK", samplings = c( 0.5, 2, 9, 24, 48, 96 ) )
+samplingsArm2 = SamplingTimes( outcome = "RespPK", samplings = c( 1, 6, 12, 36, 72, 120 ) )
+
+## arms definition
+Arm1 = Arm( name = "Arm1",
+            size = 16,
+            administrations = list( administrationRespPK ) ,
+            samplingTimes   = list( samplingsArm1 ) )
+Arm2 = Arm( name = "Arm2",
+            size = 16,
+            administrations = list( administrationRespPK ) ,
+            samplingTimes   = list( samplingsArm2 ) )
+
+designTwoArms = Design( name = "designTwoArms", arms = list( Arm1, Arm2) )
+```
+
+```{r}
+evaluationTwoArmsDesignFIMSettings = Evaluation( name = "",
+                                                 modelEquations = modelEquations,
+                                                 modelParameters = modelParameters,
+                                                 modelError = modelError,
+                                                 modelCovariates = list( CYP2C9 ), 
+                                                 modelCovariatesEquation = "exponential",
+                                                 designs = list( designTwoArms ),
+                                                 outputs = list( "RespPK" ),
+                                                 fimType = 'population' )
+
+evaluationTwoArmsDesignFIM = run( evaluationTwoArmsDesignFIMSettings )
+show( evaluationTwoArmsDesignFIM )
+```
+
+```{r}
+# Extract D-criterion for design comparison
+getDcriterion(evaluationEmpiricalDesignFIM)
+getDcriterion(evaluationTwoArmsDesignFIM)
+
+# Extract RSE for design comparison
+RSE_EmpiricalDesign = getRSE(evaluationEmpiricalDesignFIM)
+RSE_TwoArmsDesign = getRSE(evaluationTwoArmsDesignFIM)
+
+RSE_EmpiricalDesign <- tibble::rownames_to_column(RSE_EmpiricalDesign, "Parameter")
+RSE_TwoArmsDesign <- tibble::rownames_to_column(RSE_TwoArmsDesign, "Parameter")
+
+
+RSE_comparison = RSE_EmpiricalDesign%>% 
+  mutate(RSE_EmpiricalDesign = RSE) %>% 
+  left_join(RSE_TwoArmsDesign %>% 
+              rename(RSE_TwoArmsDesign = RSE))
+RSE_comparison
+```
+
+```{r}
+ggplot( RSE_EmpiricalDesign%>% 
+  mutate(Design = "RSE_EmpiricalDesign" ) %>% 
+  rbind(RSE_TwoArmsDesign %>% 
+              mutate(Design = "RSE_TwoArmsDesign" )),
+  aes(x = Parameter, y = RSE, fill = as.factor(Design))) +
+  geom_bar( stat="identity", position="dodge") +
+  ylab("RSE(%)") + 
+  labs(fill = "Design") + 
+  theme_bw()
+```
+
+
+```{r}
+testsCovariate = covariateTest(evaluationTwoArmsDesignFIM,
+                               thetaL       = log( 0.80 ),
+                               thetaU       = log( 1.25 ),
+                               target_power = 0.80,
+                               alpha        = 0.05 )
+
+show( testsCovariate )
+
+testsCovariate@significance
+```
+
+
+# Q3 PK sample optimisation
+
+```{r}
+# sampling times
+samplingsArmOptimisation = SamplingTimes( outcome = "RespPK", samplings = c( 0.5, 2, 24, 48, 96) )
+
+
+administrationConstraintsMultRespPK = AdministrationConstraints( outcome = "RespPK", doses = list( 100 ) )
+
+
+samplingConstraintsMultRespPK  = SamplingTimeConstraints( outcome = "RespPK",
+                                                          initialSamplings = c( 0.5, 1, 2, 6, 12, 24, 48, 72, 96, 120 ),
+                                                          numberOfsamplingsOptimisable = 5,
+                                                          # fixedTimes = c()
+)
+
+```
+
+
+```{r}
+armWithMultConstraints = Arm( name = "armWithMultConstraints",
+                              size = 32,
+                              administrations = list( administrationRespPK ),
+                              administrationsConstraints = list( administrationConstraintsMultRespPK ),
+                              
+                              samplingTimes   = list( samplingsArmOptimisation ),
+                              samplingTimesConstraints = list( samplingConstraintsMultRespPK ) )
+
+
+designWithMultConstraints = Design( name = "designWithMultConstraints", arms = list( armWithMultConstraints ), numberOfArms = 32 )
+
+
+```
+
+
+```{r}
+# RUN MULTIPLICATIVE ALGORITHM OPTIMISATION
+optimizationMultSettings = Optimization( name = "Optimisation Mult",
+                                         modelEquations = modelEquations,
+                                         modelParameters = modelParameters,
+                                         modelError = modelError,
+                                         modelCovariates = list( CYP2C9 ), 
+                                         modelCovariatesEquation = "exponential",
+                                         optimizer = "MultiplicativeAlgorithm",
+                                         optimizerParameters = list( lambda = 0.99,
+                                                                     numberOfIterations = 1000,
+                                                                     weightThreshold = 0.001,
+                                                                     delta = 1e-04, showProcess = T ),
+                                         designs = list( designWithMultConstraints ),
+                                         fimType = "population",
+                                         outputs = list( "RespPK" ) )
+
+optimizationMultFIM = run( optimizationMultSettings )
+show(optimizationMultFIM)
+```
+
+
+
+# Q4 extension to a PKPD model
+```{r}
+# 1. MODEL DEFINITION
+modelEquationsPKPD = list(  "Deriv_RespPK" = "dose_RespPK/V * ka  * exp( -ka * t ) - Cl/V * RespPK",
+                            "Deriv_RespPD" = "Rin*(1-Imax*RespPK/(RespPK+C50))-kout*RespPD")
+
+# 2. POPULATION PARAMETERS
+modelParametersPKPD = list(
+  ModelParameter( name = "V",    distribution = LogNormal( mu = 8, omega = sqrt(0.02) )),
+  ModelParameter( name = "Cl",   distribution = LogNormal( mu = 0.13, omega = sqrt(0.06) ) ),
+  ModelParameter( name = "ka",   distribution = LogNormal( mu = 1.6, omega = sqrt(0.70) ) ),
+  
+  ModelParameter( name = "Rin",    distribution = LogNormal( mu = 5.4, omega = sqrt(0.2) )),
+  ModelParameter( name = "kout",   distribution = LogNormal( mu = 0.06, omega = sqrt(0.02) ) ),
+  ModelParameter( name = "Imax",   distribution = LogNormal( mu = 1, omega = 0 ), fixedMu = TRUE, fixedOmega = TRUE ),
+  ModelParameter( name = "C50",   distribution = LogNormal( mu = 1.2, omega = sqrt(0.01) ) )
+  
+)
+
+# 3. ERROR MODEL
+errorModelRespPK = Combined1( output = "RespPK", sigmaInter = 0.6, sigmaSlope = 0.07 )
+errorModelRespPD = Constant( output = "RespPD", sigmaInter = 4 )
+modelErrorPKPD = list( errorModelRespPK, errorModelRespPD )
+```
+
+
+```{r}
+# 4. DESIGN DEFINITION
+
+## sampling times  
+# samplingTimesRespPD = SamplingTimes( outcome = "RespPD", samplings = c( 0, 1, 2, 6, 12, 24, 36, 48, 72, 96, 120, 144 ) )
+samplingTimesRespPD = SamplingTimes( outcome = "RespPD", samplings = c( 0, 24, 36, 48, 72, 96, 120, 144 ) )
+
+## arms definition
+empiricalArmPKPD = Arm( name = "empiricalArm",
+                        size = 32,
+                        administrations = list( administrationRespPK ) ,
+                        samplingTimes   = list( samplingTimesRespPK, samplingTimesRespPD ),
+                        initialCondition = list( "RespPK" = 0, "RespPD" = 0 ) )
+
+empiricalDesignPKPD = Design( name = "empiricalDesign", arms = list( empiricalArmPKPD ) )
+```
+
+
+```{r}
+# FISHER INFORMATION MATRIX COMPUTATION
+evaluationEmpiricalDesignFIMSettingsPKPD = Evaluation( name = "",
+                                                       modelEquations = modelEquationsPKPD,
+                                                       modelParameters = modelParametersPKPD,
+                                                       modelError = modelErrorPKPD,
+                                                       modelCovariates = list( CYP2C9 ),
+                                                       modelCovariatesEquation = "exponential",
+                                                       designs = list( empiricalDesignPKPD ),
+                                                       outputs = list( "RespPK" = "RespPK", 
+                                                                       "RespPD" = "RespPD" ),
+                                                       fimType = 'population' ,
+                                                       odeSolverParameters = list( atol = 1e-12, rtol = 1e-12  ) )
+
+evaluationEmpiricalDesignFIMPKPD = run( evaluationEmpiricalDesignFIMSettingsPKPD )
+show( evaluationEmpiricalDesignFIMPKPD )
+```
+
+
+# Q5 PK and PD sample optimisation
+```{r}
+
+samplingsArmOptimisationPK = SamplingTimes( outcome = "RespPK", samplings = c( 0.5, 6, 12, 96, 120) )
+samplingsArmOptimisationPD = SamplingTimes( outcome = "RespPD", samplings = c( 0.5, 6, 12, 96, 120) )
+
+
+administrationConstraintsMultRespPK = AdministrationConstraints( outcome = "RespPK", doses = list( 100 ) )
+
+
+
+samplingConstraintsMultRespPD  = SamplingTimeConstraints( outcome = "RespPD",
+                                                          initialSamplings = c( 0.5, 1, 2, 6, 12, 24, 48, 72, 96, 120 ),
+                                                          numberOfsamplingsOptimisable = 5,
+                                                          # fixedTimes = c()
+)
+
+
+armWithMultConstraintsPKPD = Arm( name = "armWithMultConstraints",
+                                  size = 32,
+                                  administrations = list( administrationRespPK ),
+                                  administrationsConstraints = list( administrationConstraintsMultRespPK ),
+                                  
+                                  samplingTimes   = list( samplingsArmOptimisationPK, samplingsArmOptimisationPD ),
+                                  samplingTimesConstraints = list( samplingConstraintsMultRespPD ),
+                                  initialCondition = list( "RespPK" = 0, "RespPD" = 0 ) )
+
+
+designWithMultConstraintsPKPD = Design( name = "designWithMultConstraints", arms = list( armWithMultConstraintsPKPD ), numberOfArms = 32 )
+
+```
+
+
+```{r}
+# RUN MULTIPLICATIVE ALGORITHM OPTIMISATION
+optimizationMultSettingsPKPD = Optimization( name = "Optimisation Mult",
+                                             modelEquations = modelEquationsPKPD,
+                                             modelParameters = modelParametersPKPD,
+                                             modelError = modelErrorPKPD,
+                                             modelCovariates = list( CYP2C9 ),
+                                             modelCovariatesEquation = "exponential",
+                                             optimizer = "MultiplicativeAlgorithm",
+                                             optimizerParameters = list( lambda = 0.99,
+                                                                         numberOfIterations = 1000,
+                                                                         weightThreshold = 0.001,
+                                                                         delta = 1e-04, showProcess = T ),
+                                             designs = list( designWithMultConstraintsPKPD ),
+                                             fimType = "population",
+                                             outputs = list( "RespPK" = "RespPK", 
+                                                             "RespPD" = "RespPD" ),
+                                             odeSolverParameters = list( atol = 1e-12, rtol = 1e-12  ) )
+
+optimizationMultFIMPKPD = run( optimizationMultSettingsPKPD )
+show(optimizationMultFIMPKPD)
+
+```
+
+
+```{r}
+show(optimizationMultFIM)
+show(optimizationMultFIMPKPD)
+
+```
+
